@@ -1,0 +1,119 @@
+name: Build Android APK (கரும்பு கணக்கு)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Generate Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Prepare Web Assets
+        run: |
+          # If a zip archive was uploaded directly to GitHub, extract it automatically
+          if ls *.zip 1> /dev/null 2>&1; then
+            echo "Found zip archive in repo, extracting..."
+            unzip -o *.zip
+          fi
+
+          # If the user downloaded index.html multiple times on phone, detect index (1).html etc.
+          for f in index\ \(*\).html index_*.html; do
+            if [ -f "$f" ]; then
+              echo "Detected renamed file $f, copying to index.html..."
+              cp "$f" index.html
+            fi
+          done
+
+          mkdir -p www
+
+          # Case A: If this is the full project codebase with package.json
+          if [ -f "package.json" ] && [ -d "src" ]; then
+            echo "Full project repository detected. Running npm install & npm run build..."
+            npm install --legacy-peer-deps
+            npm run build
+            if [ -d "dist" ]; then
+              cp -r dist/* www/
+            fi
+          fi
+
+          # Case B: If dist folder with built assets already exists
+          if [ -d "dist/assets" ] && [ -f "dist/index.html" ]; then
+            echo "Dist assets found, copying to www..."
+            cp -r dist/* www/
+          fi
+
+          # Case C: If www/index.html is still missing, copy standalone index.html
+          if [ ! -f "www/index.html" ]; then
+            if [ -f "index.html" ]; then
+              cp index.html www/index.html
+            elif [ -f "offline-apk/index.html" ]; then
+              cp offline-apk/index.html www/index.html
+            elif [ -f "public/offline-apk/index.html" ]; then
+              cp public/offline-apk/index.html www/index.html
+            fi
+          fi
+
+          # Copy assets directory if present
+          if [ -d "assets" ]; then
+            cp -r assets www/
+          fi
+
+          # Copy manifest and icons if available
+          [ -f "manifest.json" ] && cp manifest.json www/manifest.json || true
+          [ -f "pwa-192x192.png" ] && cp pwa-192x192.png www/pwa-192x192.png || true
+          [ -f "pwa-512x512.png" ] && cp pwa-512x512.png www/pwa-512x512.png || true
+          [ -f "pwa-maskable-512x512.png" ] && cp pwa-maskable-512x512.png www/pwa-maskable-512x512.png || true
+          [ -f "icon.svg" ] && cp icon.svg www/icon.svg || true
+          [ -f "apple-touch-icon.png" ] && cp apple-touch-icon.png www/apple-touch-icon.png || true
+
+          echo "Web assets successfully prepared in www:"
+          ls -la www
+
+      - name: Initialize Capacitor & Android Platform
+        run: |
+          npm init -y
+          npm install @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest
+          npx cap init "Karumbu Kanakku" "com.karumbukanakku.app" --web-dir www
+          npx cap add android
+          npx cap sync android
+
+      - name: Build Debug Android APK with Gradle
+        run: |
+          cd android
+          chmod +x ./gradlew
+          # Auto-increment versionCode using GitHub run_number so Android recognizes every build as an update
+          RUN_NUM="${{ github.run_number }}"
+          V_CODE=$((100 + RUN_NUM))
+          V_NAME="1.2.${RUN_NUM}"
+          echo "Building APK: versionCode=${V_CODE}, versionName=${V_NAME}"
+          ./gradlew assembleDebug -PversionCode=${V_CODE} -PversionName="${V_NAME}" --no-daemon
+
+      - name: Prepare APK Output
+        run: |
+          mkdir -p apk-output
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/Karumbu-Kanakku.apk
+          echo "APK successfully built: $(ls -lh apk-output/Karumbu-Kanakku.apk)"
+
+      - name: Upload APK to GitHub Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Karumbu-Kanakku-Android-APK
+          path: apk-output/Karumbu-Kanakku.apk
+          retention-days: 30
